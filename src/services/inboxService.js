@@ -5,6 +5,11 @@ const Lead = require("../models/Lead");
 const { analyzeReply } = require("./replyAnalysisService");
 const { decideNextAction } = require("./decisionService");
 
+
+// ======================================================
+// PROCESS ONE INCOMING EMAIL
+// ======================================================
+
 const processIncomingEmail = async ({
     senderEmail,
     subject,
@@ -17,12 +22,18 @@ const processIncomingEmail = async ({
         console.log("Sender:", senderEmail);
         console.log("Subject:", subject);
 
+        // --------------------------------------------------
         // Find lead using sender's email
+        // --------------------------------------------------
+
         const lead = await Lead.findOne({
             email: senderEmail.toLowerCase()
         });
 
+        // --------------------------------------------------
         // If sender is not one of our leads
+        // --------------------------------------------------
+
         if (!lead) {
 
             console.log(
@@ -33,46 +44,87 @@ const processIncomingEmail = async ({
             return;
         }
 
-       console.log(
-    `Matching lead found: ${lead.name}`
-);
+        console.log(
+            `Matching lead found: ${lead.name}`
+        );
 
-// Analyze customer reply using AI
-const analysis = await analyzeReply(message);
 
-console.log("AI Reply Analysis:");
-console.log(analysis);
+        // --------------------------------------------------
+        // Analyze customer reply
+        // --------------------------------------------------
 
-const decision = decideNextAction(analysis, lead);
+        const analysis = await analyzeReply(message);
 
-console.log("Business Decision:");
-console.log(decision);
+        console.log("AI Reply Analysis:");
+        console.log(analysis);
 
-// Update lead status
-lead.status = "replied";
 
-// Cancel automatic follow-ups
-lead.nextFollowUpAt = null;
+        // --------------------------------------------------
+        // Decide next business action
+        // --------------------------------------------------
 
-// Save AI analysis
-lead.intent = analysis.intent;
-lead.interestLevel = analysis.interestLevel;
-lead.projectLocation = analysis.projectLocation;
-lead.material = analysis.material;
-lead.expectedVolume = analysis.expectedVolume;
-lead.missingInformation = analysis.missingInformation;
-lead.sentiment = analysis.sentiment;
-lead.requiresHumanAttention = analysis.requiresHumanAttention;
+        const decision = decideNextAction(
+            analysis,
+            lead
+        );
 
-await lead.save();
+        console.log("Business Decision:");
+        console.log(decision);
 
-console.log(
-    `Lead ${lead.name} marked as replied and AI analysis saved.`
-);
+
+        // --------------------------------------------------
+        // Update lead status
+        // --------------------------------------------------
+
+        lead.status = "replied";
+
+
+        // --------------------------------------------------
+        // Cancel automatic follow-ups
+        // --------------------------------------------------
+
+        lead.nextFollowUpAt = null;
+
+
+        // --------------------------------------------------
+        // Save reply analysis
+        // --------------------------------------------------
+
+        lead.intent = analysis.intent;
+
+        lead.interestLevel =
+            analysis.interestLevel;
+
+        lead.projectLocation =
+            analysis.projectLocation;
+
+        lead.material =
+            analysis.material;
+
+        lead.expectedVolume =
+            analysis.expectedVolume;
+
+        lead.missingInformation =
+            analysis.missingInformation;
+
+        lead.sentiment =
+            analysis.sentiment;
+
+        lead.requiresHumanAttention =
+            analysis.requiresHumanAttention;
+
+
+        // --------------------------------------------------
+        // Save changes to MongoDB
+        // --------------------------------------------------
+
+        await lead.save();
+
 
         console.log(
-            `Lead ${lead.name} marked as replied.`
+            `Lead ${lead.name} marked as replied and analysis saved.`
         );
+
 
         return lead;
 
@@ -88,11 +140,19 @@ console.log(
 };
 
 
+
+// ======================================================
+// CHECK GMAIL INBOX
+// ======================================================
+
 const checkInbox = async () => {
 
     const client = new ImapFlow({
+
         host: "imap.gmail.com",
+
         port: 993,
+
         secure: true,
 
         auth: {
@@ -103,70 +163,196 @@ const checkInbox = async () => {
         logger: false
     });
 
+
     try {
+
+        // --------------------------------------------------
+        // Connect to Gmail
+        // --------------------------------------------------
 
         await client.connect();
 
-        console.log("Connected to Gmail inbox.");
+        console.log(
+            "Connected to Gmail inbox."
+        );
 
-        const lock = await client.getMailboxLock("INBOX");
+
+        // --------------------------------------------------
+        // Lock INBOX
+        // --------------------------------------------------
+
+        const lock =
+            await client.getMailboxLock("INBOX");
+
 
         try {
 
-            for await (const message of client.fetch(
-                {
-                    seen: false
-                },
-                {
-                    source: true,
-                    envelope: true
-                }
-            )) {
+            // --------------------------------------------------
+            // Fetch unread emails
+            // --------------------------------------------------
 
-                const parsed = await simpleParser(
-                    message.source
-                );
+            for await (
+                const message of client.fetch(
+                    {
+                        seen: false
+                    },
+                    {
+                        source: true,
+                        envelope: true
+                    }
+                )
+            ) {
+
+                // --------------------------------------------------
+                // Parse email
+                // --------------------------------------------------
+
+                const parsed =
+                    await simpleParser(
+                        message.source
+                    );
+
+
+                // --------------------------------------------------
+                // Get sender email
+                // --------------------------------------------------
 
                 const senderEmail =
                     parsed.from?.value?.[0]?.address;
 
-                console.log("--------------------------------");
-                console.log("New email received");
-                console.log("From:", senderEmail);
-                console.log("Subject:", parsed.subject);
+
                 console.log("--------------------------------");
 
+                console.log(
+                    "New email received"
+                );
+
+                console.log(
+                    "From:",
+                    senderEmail
+                );
+
+                console.log(
+                    "Subject:",
+                    parsed.subject
+                );
+
+                console.log("--------------------------------");
+
+
+                // --------------------------------------------------
+                // Process email
+                // --------------------------------------------------
+
                 await processIncomingEmail({
+
                     senderEmail,
+
                     subject: parsed.subject,
+
                     message: parsed.text
                 });
             }
 
+
         } finally {
+
+            // --------------------------------------------------
+            // Release mailbox lock
+            // --------------------------------------------------
 
             lock.release();
         }
 
+
+        // --------------------------------------------------
+        // Logout from Gmail
+        // --------------------------------------------------
+
         await client.logout();
+
+        console.log(
+            "Disconnected from Gmail."
+        );
+
 
     } catch (error) {
 
+        // ==================================================
+        // DETAILED IMAP ERROR
+        // ==================================================
+
         console.error(
-            "Inbox checking failed:",
-            error.message
+            "========== INBOX ERROR =========="
         );
 
+        console.error(
+            "message:",
+            error?.message
+        );
+
+        console.error(
+            "name:",
+            error?.name
+        );
+
+        console.error(
+            "code:",
+            error?.code
+        );
+
+        console.error(
+            "command:",
+            error?.command
+        );
+
+        console.error(
+            "response:",
+            error?.response
+        );
+
+        console.error(
+            "responseCode:",
+            error?.responseCode
+        );
+
+        console.error(
+            "stack:",
+            error?.stack
+        );
+
+        console.error(
+            "================================="
+        );
+
+
+        // --------------------------------------------------
+        // Try to logout safely
+        // --------------------------------------------------
+
         try {
+
             await client.logout();
+
         } catch (logoutError) {
-            // Ignore logout errors
+
+            console.error(
+                "Logout failed:",
+                logoutError?.message
+            );
         }
     }
 };
 
 
+
+// ======================================================
+// EXPORT FUNCTIONS
+// ======================================================
+
 module.exports = {
+
     checkInbox,
+
     processIncomingEmail
 };

@@ -1,7 +1,7 @@
 const analyzeReply = async (message) => {
     console.log("Analyzing customer reply...");
 
-    const text = message.toLowerCase();
+    const text = message.toLowerCase().trim();
 
     let intent = "unknown";
     let sentiment = "neutral";
@@ -14,7 +14,8 @@ const analyzeReply = async (message) => {
         text.includes("not interested") ||
         text.includes("no requirement") ||
         text.includes("don't need") ||
-        text.includes("do not need")
+        text.includes("do not need") ||
+        text.includes("not required")
     ) {
         intent = "not_interested";
     }
@@ -31,7 +32,9 @@ const analyzeReply = async (message) => {
         text.includes("interested") ||
         text.includes("requirement") ||
         text.includes("need crusher") ||
-        text.includes("looking for")
+        text.includes("looking for") ||
+        text.includes("need") ||
+        text.includes("required")
     ) {
         intent = "interested";
     }
@@ -44,36 +47,79 @@ const analyzeReply = async (message) => {
         text.includes("thanks") ||
         text.includes("thank you") ||
         text.includes("interested") ||
-        text.includes("good")
+        text.includes("good") ||
+        text.includes("great")
     ) {
         sentiment = "positive";
     }
     else if (
         text.includes("not interested") ||
         text.includes("no thanks") ||
-        text.includes("don't need")
+        text.includes("don't need") ||
+        text.includes("do not need")
     ) {
         sentiment = "negative";
     }
 
     // -------------------------
-    // Information extraction
+    // Project location
     // -------------------------
 
     let projectLocation = null;
+
+    const locations = [
+        "indore",
+        "bhopal",
+        "pithampur",
+        "jabalpur",
+        "ujjain",
+        "dewas"
+    ];
+
+    const detectedLocation = locations.find((location) =>
+        text.includes(location)
+    );
+
+    if (detectedLocation) {
+        projectLocation =
+            detectedLocation.charAt(0).toUpperCase() +
+            detectedLocation.slice(1);
+    }
+
+    // -------------------------
+    // Material
+    // -------------------------
+
     let material = null;
+
+    const materials = [
+        "basalt",
+        "limestone",
+        "granite",
+        "aggregate",
+        "stone"
+    ];
+
+    const detectedMaterial = materials.find((item) =>
+        text.includes(item)
+    );
+
+    if (detectedMaterial) {
+        material = detectedMaterial;
+    }
+
+    // -------------------------
+    // Expected volume
+    // -------------------------
+
     let expectedVolume = null;
 
-    if (text.includes("indore")) {
-        projectLocation = "Indore";
-    }
+    const volumeMatch = text.match(
+        /\b\d+(?:\.\d+)?\s*(?:tons?|tonnes?)(?:\s*\/\s*(?:day|month|week))?\b/i
+    );
 
-    if (text.includes("basalt")) {
-        material = "basalt";
-    }
-
-    if (text.includes("500 tons")) {
-        expectedVolume = "500 tons/day";
+    if (volumeMatch) {
+        expectedVolume = volumeMatch[0];
     }
 
     // -------------------------
@@ -102,6 +148,9 @@ const analyzeReply = async (message) => {
 
     if (intent === "interested") {
         interestLevel = "high";
+    }
+    else if (intent === "asking_price") {
+        interestLevel = "medium";
     }
 
     // -------------------------
