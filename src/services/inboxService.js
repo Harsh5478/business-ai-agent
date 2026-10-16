@@ -1,3 +1,4 @@
+
 const { ImapFlow } = require("imapflow");
 const { simpleParser } = require("mailparser");
 
@@ -5,354 +6,186 @@ const Lead = require("../models/Lead");
 const { analyzeReply } = require("./replyAnalysisService");
 const { decideNextAction } = require("./decisionService");
 
+let inboxCheckRunning = false;
 
-// ======================================================
-// PROCESS ONE INCOMING EMAIL
-// ======================================================
-
+// Process one incoming email
 const processIncomingEmail = async ({
     senderEmail,
     subject,
     message
 }) => {
-
     try {
-
         console.log("Processing incoming email...");
         console.log("Sender:", senderEmail);
         console.log("Subject:", subject);
 
-        // --------------------------------------------------
-        // Find lead using sender's email
-        // --------------------------------------------------
-
-        const lead = await Lead.findOne({
-            email: senderEmail.toLowerCase()
-        });
-
-        // --------------------------------------------------
-        // If sender is not one of our leads
-        // --------------------------------------------------
-
-        if (!lead) {
-
-            console.log(
-                "No matching lead found for:",
-                senderEmail
-            );
-
-            return;
+        // Validate sender and message
+        if (!senderEmail) {
+            console.log("Email has no sender address. Skipping.");
+            return null;
         }
 
-        console.log(
-            `Matching lead found: ${lead.name}`
-        );
+        if (typeof message !== "string" || !message.trim()) {
+            console.log("Email has no readable text. Skipping.");
+            return null;
+        }
 
+        // Find the matching lead
+        const normalizedEmail = senderEmail.trim().toLowerCase();
 
-        // --------------------------------------------------
-        // Analyze customer reply
-        // --------------------------------------------------
+        const lead = await Lead.findOne({
+            email: normalizedEmail
+        });
 
+        if (!lead) {
+            console.log("No matching lead found:", normalizedEmail);
+            return null;
+        }
+
+        console.log(`Matching lead found: ${lead.name}`);
+
+        // Analyze the reply
         const analysis = await analyzeReply(message);
 
-        console.log("AI Reply Analysis:");
-        console.log(analysis);
+        console.log("Reply analysis:", analysis);
 
+        // Decide the next business action
+        const decision = decideNextAction(analysis, lead);
 
-        // --------------------------------------------------
-        // Decide next business action
-        // --------------------------------------------------
+        console.log("Business decision:", decision);
 
-        const decision = decideNextAction(
-            analysis,
-            lead
-        );
-
-        console.log("Business Decision:");
-        console.log(decision);
-
-
-        // --------------------------------------------------
-        // Update lead status
-        // --------------------------------------------------
-
+        // Save reply details
         lead.status = "replied";
 
-
-        // --------------------------------------------------
-        // Cancel automatic follow-ups
-        // --------------------------------------------------
-
+        // Stop scheduled follow-ups after a reply
         lead.nextFollowUpAt = null;
 
-
-        // --------------------------------------------------
-        // Save reply analysis
-        // --------------------------------------------------
-
         lead.intent = analysis.intent;
-
-        lead.interestLevel =
-            analysis.interestLevel;
-
-        lead.projectLocation =
-            analysis.projectLocation;
-
-        lead.material =
-            analysis.material;
-
-        lead.expectedVolume =
-            analysis.expectedVolume;
-
-        lead.missingInformation =
-            analysis.missingInformation;
-
-        lead.sentiment =
-            analysis.sentiment;
+        lead.interestLevel = analysis.interestLevel;
+        lead.projectLocation = analysis.projectLocation;
+        lead.material = analysis.material;
+        lead.expectedVolume = analysis.expectedVolume;
+        lead.missingInformation = analysis.missingInformation;
+        lead.sentiment = analysis.sentiment;
 
         lead.requiresHumanAttention =
-            analysis.requiresHumanAttention;
+            analysis.requiresHumanAttention ||
+            decision.action === "human_attention";
 
-
-        // --------------------------------------------------
-        // Save changes to MongoDB
-        // --------------------------------------------------
+        // Respect an explicit opt-out
+        if (decision.action === "stop_followups") {
+            lead.doNotContact = true;
+            console.log("Opt-out detected. Future contact is disabled.");
+        }
 
         await lead.save();
 
-
-        console.log(
-            `Lead ${lead.name} marked as replied and analysis saved.`
-        );
-
+        console.log(`Lead ${lead.name} updated successfully.`);
+        console.log("Next action:", decision.action);
 
         return lead;
-
     } catch (error) {
-
         console.error(
             "Incoming email processing failed:",
             error.message
         );
-
         throw error;
     }
 };
 
-
-
-// ======================================================
-// CHECK GMAIL INBOX
-// ======================================================
-
+// Check Gmail inbox for unread messages
 const checkInbox = async () => {
+    // Prevent overlapping inbox checks
+    if (inboxCheckRunning) {
+        console.log("Inbox check already running. Skipping.");
+        return;
+    }
+
+    inboxCheckRunning = true;
 
     const client = new ImapFlow({
-
         host: "imap.gmail.com",
-
         port: 993,
-
         secure: true,
-
         auth: {
             user: process.env.EMAIL_USER,
             pass: process.env.EMAIL_PASSWORD
         },
-
         logger: false
     });
 
+    let connected = false;
 
     try {
-
-        // --------------------------------------------------
-        // Connect to Gmail
-        // --------------------------------------------------
-
         await client.connect();
+        connected = true;
 
-        console.log(
-            "Connected to Gmail inbox."
-        );
+        console.log("Connected to Gmail inbox.");
 
-
-        // --------------------------------------------------
-        // Lock INBOX
-        // --------------------------------------------------
-
-        const lock =
-            await client.getMailboxLock("INBOX");
-
+        const lock = await client.getMailboxLock("INBOX");
 
         try {
+            for await (const email of client.fetch(
+                { seen: false },
+                { source: true, envelope: true, uid: true }
+            )) {
+                try {
+                    const parsed = await simpleParser(email.source);
 
-            // --------------------------------------------------
-            // Fetch unread emails
-            // --------------------------------------------------
+                    const senderEmail =
+                        parsed.from?.value?.[0]?.address;
 
-            for await (
-                const message of client.fetch(
-                    {
-                        seen: false
-                    },
-                    {
-                        source: true,
-                        envelope: true
-                    }
-                )
-            ) {
+                    console.log("--------------------------------");
+                    console.log("Unread email received");
+                    console.log("From:", senderEmail);
+                    console.log("Subject:", parsed.subject);
+                    console.log("--------------------------------");
 
-                // --------------------------------------------------
-                // Parse email
-                // --------------------------------------------------
+                    await processIncomingEmail({
+                        senderEmail,
+                        subject: parsed.subject,
+                        message: parsed.text || ""
+                    });
 
-                const parsed =
-                    await simpleParser(
-                        message.source
+                    // Mark as read only after processing completes
+                    await client.messageFlagsAdd(
+                        email.uid,
+                        ["\\Seen"],
+                        { uid: true }
                     );
 
-
-                // --------------------------------------------------
-                // Get sender email
-                // --------------------------------------------------
-
-                const senderEmail =
-                    parsed.from?.value?.[0]?.address;
-
-
-                console.log("--------------------------------");
-
-                console.log(
-                    "New email received"
-                );
-
-                console.log(
-                    "From:",
-                    senderEmail
-                );
-
-                console.log(
-                    "Subject:",
-                    parsed.subject
-                );
-
-                console.log("--------------------------------");
-
-
-                // --------------------------------------------------
-                // Process email
-                // --------------------------------------------------
-
-                await processIncomingEmail({
-
-                    senderEmail,
-
-                    subject: parsed.subject,
-
-                    message: parsed.text
-                });
+                    console.log("Email marked as read.");
+                } catch (emailError) {
+                    // Leave failed messages unread so they can be retried
+                    console.error(
+                        `Failed to process email UID ${email.uid}:`,
+                        emailError.message
+                    );
+                }
             }
-
-
         } finally {
-
-            // --------------------------------------------------
-            // Release mailbox lock
-            // --------------------------------------------------
-
             lock.release();
         }
-
-
-        // --------------------------------------------------
-        // Logout from Gmail
-        // --------------------------------------------------
-
-        await client.logout();
-
-        console.log(
-            "Disconnected from Gmail."
-        );
-
-
     } catch (error) {
-
-        // ==================================================
-        // DETAILED IMAP ERROR
-        // ==================================================
-
-        console.error(
-            "========== INBOX ERROR =========="
-        );
-
-        console.error(
-            "message:",
-            error?.message
-        );
-
-        console.error(
-            "name:",
-            error?.name
-        );
-
-        console.error(
-            "code:",
-            error?.code
-        );
-
-        console.error(
-            "command:",
-            error?.command
-        );
-
-        console.error(
-            "response:",
-            error?.response
-        );
-
-        console.error(
-            "responseCode:",
-            error?.responseCode
-        );
-
-        console.error(
-            "stack:",
-            error?.stack
-        );
-
-        console.error(
-            "================================="
-        );
-
-
-        // --------------------------------------------------
-        // Try to logout safely
-        // --------------------------------------------------
-
-        try {
-
-            await client.logout();
-
-        } catch (logoutError) {
-
-            console.error(
-                "Logout failed:",
-                logoutError?.message
-            );
+        console.error("Inbox check failed:", error.message);
+    } finally {
+        if (connected) {
+            try {
+                await client.logout();
+                console.log("Disconnected from Gmail.");
+            } catch (logoutError) {
+                console.error(
+                    "Gmail logout failed:",
+                    logoutError.message
+                );
+            }
         }
+
+        inboxCheckRunning = false;
     }
 };
 
-
-
-// ======================================================
-// EXPORT FUNCTIONS
-// ======================================================
-
 module.exports = {
-
     checkInbox,
-
     processIncomingEmail
 };
